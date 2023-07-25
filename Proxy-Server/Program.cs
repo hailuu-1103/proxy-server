@@ -1,10 +1,10 @@
 ﻿using System.Net;
 using StackExchange.Redis;
 
-class ProxyServer
+public class ProxyServer
 {
     private readonly ConnectionMultiplexer redisConnection;
-    private readonly HttpClient httpClient;
+    private readonly HttpClient            httpClient;
 
     public ProxyServer()
     {
@@ -33,26 +33,27 @@ class ProxyServer
 
     private async Task HandleClientRequestAsync(HttpListenerContext context)
     {
-        var request = context.Request;
+        var request  = context.Request;
         var response = context.Response;
 
         try
         {
             // Check if the data exists in Redis (using request URL as cache key)
-            var cacheKey = request.Url.ToString();
-            var cache = redisConnection.GetDatabase();
+            var cacheKey   = request.Url.ToString();
+            var cache      = redisConnection.GetDatabase();
             var cachedData = await cache.StringGetAsync(cacheKey);
 
             if (!cachedData.IsNull)
             {
                 // Serve the cached response to the client
-                response.ContentType = "application/json"; // Set the appropriate content type
+                response.ContentType = response.Headers["Content-Type"]; // Set the content type of the cached response
+                response.ContentLength64 = cachedData.Length();
                 await response.OutputStream.WriteAsync(cachedData);
             }
             else
             {
                 // Fetch data from the destination server
-                var destinationUri = new Uri("http://103.214.9.148"); // Replace with your destination server URL
+                var destinationUri     = new Uri("http://103.214.9.148"); // Replace with your destination server URL
                 var destinationRequest = new HttpRequestMessage(new HttpMethod(request.HttpMethod), destinationUri);
                 foreach (var headerKey in request.Headers.AllKeys)
                 {
@@ -60,13 +61,22 @@ class ProxyServer
                 }
 
                 var destinationResponse = await httpClient.SendAsync(destinationRequest);
-                var responseData = await destinationResponse.Content.ReadAsByteArrayAsync();
+                var responseData        = await destinationResponse.Content.ReadAsByteArrayAsync();
 
                 // Cache the response in Redis with an expiration time
                 await cache.StringSetAsync(cacheKey, responseData, expiry: TimeSpan.FromMinutes(5));
 
+                // Copy destination response headers to the proxy server response
+                foreach (var header in destinationResponse.Headers)
+                {
+                    response.Headers[header.Key] = string.Join(",", header.Value);
+                }
+
+                response.Headers["Content-Type"] = destinationResponse.Content.Headers.ContentType?.ToString();
+
                 // Serve the response back to the client
-                response.ContentType = "application/json"; // Set the appropriate content type
+                response.ContentType     = response.Headers["Content-Type"];
+                response.ContentLength64 = responseData.Length;
                 await response.OutputStream.WriteAsync(responseData);
             }
 
@@ -81,11 +91,11 @@ class ProxyServer
     }
 }
 
-class Program
+public class Program
 {
-    static void Main(string[] args)
+    public static void Main(string[] args)
     {
         var proxyServer = new ProxyServer();
-        proxyServer.StartProxyServer("localhost", 8080).Wait();
+        proxyServer.StartProxyServer("localhost", 80).Wait();
     }
 }
